@@ -40,7 +40,7 @@ docker compose up --build
 
 The dashboard is served at http://localhost:8080 and over TLS at https://localhost:8443. Put certificates in `deploy/certs` (or set `TLS_CERT_DIR`); an empty directory receives a local certificate when the web container starts. Nginx adds security headers and limits API traffic to 2 requests per second per address. PostgreSQL stores the catalogue. JSON contracts seed missing events only. Alembic is the schema authority: `upgrade head` creates a new database and later revisions upgrade an existing one.
 
-Authentication stays off until `AUTH_DISABLED=false` plus the OIDC settings. Secrets can be supplied with `DATABASE_URL_FILE` and `LLM_API_KEY_FILE`. With authentication on, `/metrics` and the API docs require a bearer token. The API also keeps a per-process limit (`RATE_LIMIT`, default 120/minute) for clients that are not behind Nginx.
+Contracts move from DRAFT to REVIEW to APPROVED. Deprecation requires a different approved replacement, and the contract page lists repositories whose validations already emitted that event. Authentication stays off until `AUTH_DISABLED=false` plus the OIDC settings. Secrets can be supplied with `DATABASE_URL_FILE` and `LLM_API_KEY_FILE`. With authentication on, `/metrics` and the API docs require a bearer token. The API also keeps a per-process limit (`RATE_LIMIT`, default 120/minute) for clients that are not behind Nginx.
 
 ```bash
 docker compose --profile backup up -d backup
@@ -54,7 +54,7 @@ Backups run on `BACKUP_INTERVAL_SECONDS` (default one day), keep `BACKUP_RETENTI
 ## What it demonstrates
 
 1. **Analyze PRD** — recommends `plan_selected`, `purchase_button_clicked`, `checkout_started` and suggests reusing catalogue events  
-2. **Catalogue** — contracts with parameters, types, platforms, ACTIVE/DEPRECATED  
+2. **Catalogue** — contracts with parameters, types, platforms, and statuses DRAFT, REVIEW, APPROVED, DEPRECATED  
 3. **Validate** — invalid `buy_now` fails; corrected `purchase_button_clicked` passes  
 4. **CLI / CI** — `event-validator scan` + GitHub Action workflow  
 
@@ -79,7 +79,7 @@ PRD / Jira → AI Analyzer → Event Catalogue (contracts)
 ```
 
 - **AI:** requirement understanding, reuse/duplicate suggestions, explanations  
-- **Rules:** required fields, types, naming, deprecation, platform checks, CI exit codes  
+- **Rules:** required fields, types, allowed values, naming, deprecation, platform checks, CI exit codes  
 
 ---
 
@@ -87,7 +87,7 @@ PRD / Jira → AI Analyzer → Event Catalogue (contracts)
 
 ```
 event-governance-engine/
-├── backend/           # FastAPI + SQLite + AI + validator
+├── backend/           # FastAPI + AI + validator (SQLite locally, PostgreSQL in Docker)
 ├── frontend/          # React (Vite) dashboard
 ├── validator-cli/     # CI-friendly scanner
 ├── event-contracts/   # JSON seed contracts
@@ -107,9 +107,14 @@ event-governance-engine/
 | GET | `/api/stats` | Dashboard counters |
 | GET | `/api/demo/prd` | Seed Buy Now PRD |
 | POST | `/api/events/generate` | PRD → events |
-| GET | `/api/events?q=` | Search catalogue |
+| GET | `/api/events?q=&status=` | Search catalogue, one status at a time, 50 per page |
 | GET | `/api/events/{name}` | Contract detail |
+| GET | `/api/events/{name}/schema` | JSON Schema for an approved contract |
+| GET | `/api/events/{name}/types?language=` | TypeScript, Kotlin, or Swift |
+| GET | `/api/events/{name}/usages` | Repositories whose validations emitted the event |
+| GET | `/api/queue` | Drafts you own and contracts waiting for approval |
 | POST | `/api/validate` | Validate code or `sample=valid\|invalid` |
+| POST | `/api/validate/payload` | Validate a runtime payload |
 | GET | `/api/validation/{id}` | Stored report |
 
 ---

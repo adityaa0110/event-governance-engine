@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 class ParameterSpec(BaseModel):
     type: str = "string"
     required: bool = True
+    allowed_values: list[str] = Field(default_factory=list)
+    pii: bool = False
 
 
 class EventContract(BaseModel):
@@ -62,6 +64,7 @@ class ValidateCodeRequest(BaseModel):
     code: str | None = None
     sample: str | None = None  # "invalid" | "valid"
     platform: str | None = None
+    repository: str = ""
 
 
 class ValidationIssue(BaseModel):
@@ -113,6 +116,7 @@ class EventCreate(BaseModel):
     replacement: str | None = None
     platforms: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
+    owner: str = ""
     trigger: str = ""
     parameters: dict[str, ParameterSpec] = Field(default_factory=dict)
 
@@ -123,6 +127,7 @@ class EventUpdate(BaseModel):
     replacement: str | None = None
     platforms: list[str] | None = None
     aliases: list[str] | None = None
+    owner: str | None = None
     trigger: str | None = None
     parameters: dict[str, ParameterSpec] | None = None
     expected_revision: int | None = None
@@ -223,6 +228,58 @@ class PublicConfig(BaseModel):
     client_id: str = ""
     audience: str = ""
     scopes: str = "openid profile email"
+
+
+class PayloadCheckRequest(BaseModel):
+    event_name: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    repository: str = ""
+
+
+class JsonSchemaOut(BaseModel):
+    event_name: str
+    json_schema: dict[str, Any]
+
+
+class PublishedType(BaseModel):
+    language: str
+    source: str
+
+
+class UsageSummary(BaseModel):
+    repository: str
+    count: int
+    last_file: str = ""
+    last_line: int | None = None
+
+
+class QueueItem(BaseModel):
+    event_name: str
+    status: str
+    owner: str = ""
+    reason: str
+
+
+class NotificationOut(BaseModel):
+    id: int
+    audience: str
+    event_name: str
+    kind: str
+    message: str
+    read: bool
+    created_at: datetime
+
+
+class AiRunOut(BaseModel):
+    id: int
+    model: str
+    prompt_version: str
+    input_hash: str
+    requirement_redacted: str
+    latency_ms: int
+    fallback_reason: str
+    status: str
+    created_at: datetime
 
 
 class ValidationResultOut(BaseModel):

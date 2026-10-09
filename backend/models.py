@@ -43,6 +43,8 @@ class EventParameter(Base):
     name: Mapped[str] = mapped_column(String(128))
     type: Mapped[str] = mapped_column(String(32), default="string")
     required: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_values: Mapped[str] = mapped_column(Text, default="[]")
+    pii: Mapped[bool] = mapped_column(Boolean, default=False)
 
     event: Mapped["Event"] = relationship("Event", back_populates="parameters")
 
@@ -85,6 +87,7 @@ class RecommendationDecision(Base):
     event_name: Mapped[str] = mapped_column(String(128), index=True, default="")
     decision: Mapped[str] = mapped_column(String(32))
     idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    request_hash: Mapped[str] = mapped_column(String(64), default="")
     response_json: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -127,4 +130,29 @@ class AiRun(Base):
     fallback_reason: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="")
     trace_id: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class EventUsage(Base):
+    __tablename__ = "event_usages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_name: Mapped[str] = mapped_column(String(128), index=True)
+    repository: Mapped[str] = mapped_column(String(256), default="")
+    file: Mapped[str] = mapped_column(String(512), default="")
+    line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    validation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actor: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    audience: Mapped[str] = mapped_column(String(128), index=True)
+    event_name: Mapped[str] = mapped_column(String(128), index=True, default="")
+    kind: Mapped[str] = mapped_column(String(64), default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    read: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

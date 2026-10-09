@@ -319,3 +319,82 @@ def test_redaction_and_migration_roundtrip(tmp_path, monkeypatch):
     command.upgrade(cfg, "head")
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
+
+
+def test_contract_publishing_queue_and_dependencies(client):
+    name = f"plan_banner_{uuid.uuid4().hex[:8]}"
+    created = client.post(
+        "/api/events",
+        json={
+            "event_name": name,
+            "description": "Banner seen",
+            "platforms": ["APP", "SHOP"],
+            "aliases": ["bannerSeen"],
+            "owner": "ada@example.com",
+            "trigger": "Banner enters the viewport",
+            "parameters": {
+                "banner_id": {"type": "string", "required": True, "allowed_values": ["hero", "footer"], "pii": False},
+                "email": {"type": "string", "required": False, "pii": True},
+            },
+        },
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert body["platforms"] == ["APP", "SHOP"]
+    assert body["owner"] == "ada@example.com"
+    assert body["parameters"]["banner_id"]["allowed_values"] == ["hero", "footer"]
+    assert body["parameters"]["email"]["pii"] is True
+
+    schema = client.get(f"/api/events/{name}/schema").json()["json_schema"]
+    assert schema["properties"]["banner_id"]["enum"] == ["hero", "footer"]
+    assert "personal data" in schema["properties"]["email"]["description"]
+    typescript = client.get(f"/api/events/{name}/types?language=typescript").json()["source"]
+    assert "banner_id" in typescript
+    assert "hero" in typescript
+
+    missing = client.post("/api/validate/payload", json={"event_name": name, "payload": {"banner_id": "hero"}, "repository": "shop-web"})
+    assert missing.status_code == 200
+    assert missing.json()["status"] == "FAILED"
+    assert any(issue["code"] == "NOT_APPROVED" for issue in missing.json()["issues"])
+
+    client.post(f"/api/events/{name}/transitions", json={"action": "submit", "expected_revision": body["revision"]})
+    approved = client.post(
+        f"/api/events/{name}/transitions",
+        json={"action": "approve", "expected_revision": body["revision"] + 1},
+    )
+    assert approved.status_code == 200
+
+    bad = client.post(
+        "/api/validate/payload",
+        json={"event_name": name, "payload": {"banner_id": "side"}, "repository": "shop-web"},
+    )
+    assert any(issue["code"] == "VALUE" for issue in bad.json()["issues"])
+    good = client.post(
+        "/api/validate/payload",
+        json={"event_name": name, "payload": {"banner_id": "hero"}, "repository": "shop-web"},
+    )
+    assert good.json()["status"] == "PASSED"
+    usages = client.get(f"/api/events/{name}/usages").json()
+    assert usages[0]["repository"] == "shop-web"
+    assert usages[0]["count"] >= 1
+
+    notices = client.get("/api/notifications?unread=true").json()
+    assert any(item["event_name"] == name and item["kind"] == "review" for item in notices)
+    queue = client.get("/api/queue").json()
+    assert all(item["event_name"] != name or item["status"] != "REVIEW" for item in queue)
+
+    key = uuid.uuid4().hex
+    first_body = {
+        "requirement": "Track a banner",
+        "decision": "rejected",
+        "event": {"event_name": name, "description": "Banner", "parameters": {}},
+    }
+    other_body = {**first_body, "requirement": "Track a different banner"}
+    headers = {"Idempotency-Key": key}
+    assert client.post("/api/recommendations", json=first_body, headers=headers).status_code == 200
+    conflict = client.post("/api/recommendations", json=other_body, headers=headers)
+    assert conflict.status_code == 409
+
+    filtered = client.get("/api/events?status=APPROVED&limit=50").json()
+    assert all(item["status"] == "APPROVED" for item in filtered["items"])
+    assert any(item["event_name"] == name for item in filtered["items"])

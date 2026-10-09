@@ -35,6 +35,26 @@ CASES = [
         "requirement": "Open the help center article.",
         "expected": ["help_center_article"],
     },
+    {
+        "name": "purchase-click-only",
+        "requirement": "The shopper clicks purchase.",
+        "expected": ["purchase_button_clicked"],
+    },
+    {
+        "name": "invoice-view",
+        "requirement": "Customer views an invoice.",
+        "expected": ["views_invoice"],
+    },
+    {
+        "name": "support-ticket",
+        "requirement": "Agent opens a support ticket.",
+        "expected": ["agent_opens_support_ticket"],
+    },
+    {
+        "name": "bill-download",
+        "requirement": "Customer downloads a bill pdf.",
+        "expected": ["downloads_bill_pdf"],
+    },
 ]
 
 

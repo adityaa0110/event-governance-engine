@@ -28,8 +28,10 @@ export const api = {
   me: () => request('/me'),
   stats: () => request('/stats'),
   demoPrd: () => request('/demo/prd'),
-  listEvents: (q, offset = 0) =>
-    request(`/events?limit=50&offset=${offset}${q ? `&q=${encodeURIComponent(q)}` : ''}`),
+  listEvents: (q, offset = 0, status = '') =>
+    request(
+      `/events?limit=50&offset=${offset}${q ? `&q=${encodeURIComponent(q)}` : ''}${status ? `&status=${encodeURIComponent(status)}` : ''}`,
+    ),
   updateEvent: (name, payload) =>
     request(`/events/${encodeURIComponent(name)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   getEvent: (name) => request(`/events/${encodeURIComponent(name)}`),
@@ -41,6 +43,17 @@ export const api = {
       body: JSON.stringify({ action, replacement, comment, expected_revision: expectedRevision }),
     }),
   diff: (name) => request(`/events/${encodeURIComponent(name)}/diff`),
+  schema: (name) => request(`/events/${encodeURIComponent(name)}/schema`),
+  types: (name, language) => request(`/events/${encodeURIComponent(name)}/types?language=${encodeURIComponent(language)}`),
+  usages: (name) => request(`/events/${encodeURIComponent(name)}/usages`),
+  queue: () => request('/queue'),
+  notifications: () => request('/notifications?unread=true'),
+  markNotification: (id) => request(`/notifications/${id}/read`, { method: 'POST' }),
+  aiRuns: () => request('/ai-runs?limit=8'),
+  validatePayload: (payload) => request('/validate/payload', { method: 'POST', body: JSON.stringify(payload) }),
+  trackingFunctions: () => request('/tracking-functions'),
+  addTrackingFunction: (payload) =>
+    request('/tracking-functions', { method: 'POST', body: JSON.stringify(payload) }),
   decide: (payload) => request('/recommendations', { method: 'POST', body: JSON.stringify(payload) }),
   recommendations: () => request('/recommendations?limit=8'),
   generate: (requirement, platform = 'BROADBAND') =>

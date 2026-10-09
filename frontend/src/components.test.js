@@ -7,8 +7,8 @@ import { ContractEditor, DiffView, formatDiffValue, parametersFromRows } from '.
 test('formats diff values and builds parameter payloads', () => {
   assert.equal(formatDiffValue(null), '—')
   assert.equal(formatDiffValue({ price: { type: 'number', required: true } }), '{"price":{"type":"number","required":true}}')
-  assert.deepEqual(parametersFromRows([{ name: ' item_id ', type: 'string', required: true }, { name: '', type: 'number', required: false }]), {
-    item_id: { type: 'string', required: true },
+  assert.deepEqual(parametersFromRows([{ name: ' item_id ', type: 'string', required: true, allowed: 'hero, footer', pii: true }, { name: '', type: 'number', required: false }]), {
+    item_id: { type: 'string', required: true, allowed_values: ['hero', 'footer'], pii: true },
   })
 })
 
@@ -33,6 +33,9 @@ test('renders the contract editor with add and remove controls', () => {
   assert.match(html, /Add parameter/)
   assert.match(html, /Remove/)
   assert.match(html, /Event name/)
+  assert.match(html, /Owner/)
+  assert.match(html, /BROADBAND/)
+  assert.match(html, /PII/)
 })
 
 test('renders save controls when editing an existing draft', () => {

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from auth import Principal
 from config import audit_retention_days
-from models import AuditLog, Event, EventParameter, EventVersion, utcnow
+from models import AuditLog, Event, EventParameter, EventVersion, Notification, utcnow
 from tracing import current_trace_id
 from schemas import ParameterSpec
 from services import event_to_contract
@@ -75,7 +75,7 @@ def contract_diff(current: dict, approved: dict | None) -> list[dict]:
     if not approved:
         return []
     changes = []
-    for field in ("description", "version", "status", "trigger", "platforms", "aliases", "parameters", "replacement"):
+    for field in ("description", "version", "status", "owner", "trigger", "platforms", "aliases", "parameters", "replacement"):
         before = approved.get(field)
         after = current.get(field)
         if before != after:
@@ -95,12 +95,23 @@ def validate_contract_shape(event_name: str, parameters: dict[str, ParameterSpec
         seen.add(name)
         if spec.type not in ALLOWED_TYPES:
             raise HTTPException(status_code=422, detail=f"Unsupported type '{spec.type}'")
+        for value in spec.allowed_values:
+            if not str(value).strip():
+                raise HTTPException(status_code=422, detail=f"Parameter '{name}' has an empty allowed value")
 
 
 def replace_parameters(event: Event, parameters: dict[str, ParameterSpec]) -> None:
     event.parameters.clear()
     for name, spec in parameters.items():
-        event.parameters.append(EventParameter(name=name, type=spec.type, required=spec.required))
+        event.parameters.append(
+            EventParameter(
+                name=name,
+                type=spec.type,
+                required=spec.required,
+                allowed_values=json.dumps(list(spec.allowed_values)),
+                pii=spec.pii,
+            )
+        )
 
 
 def last_approved_snapshot(db: Session, event_name: str) -> dict | None:
@@ -129,7 +140,25 @@ def is_breaking(previous: dict, updated: dict) -> bool:
         new_required = new_params[name].get("required", True) if isinstance(new_params[name], dict) else True
         if new_required and not old_required:
             return True
+        old_values = set(spec.get("allowed_values") or []) if isinstance(spec, dict) else set()
+        new_spec = new_params[name]
+        new_values = set(new_spec.get("allowed_values") or []) if isinstance(new_spec, dict) else set()
+        if new_values and not old_values:
+            return True
+        if old_values and new_values and not old_values <= new_values:
+            return True
     return False
+
+
+def notify(db: Session, audience: str, event_name: str, kind: str, message: str) -> None:
+    db.add(
+        Notification(
+            audience=audience,
+            event_name=event_name,
+            kind=kind,
+            message=message,
+        )
+    )
 
 
 def require_revision(event: Event, expected: int | None) -> None:
@@ -230,4 +259,13 @@ def transition(
     note = (comment or "").strip() if action == "reject" else ""
     record_version(db, event, principal, action, note)
     record_audit(db, principal, action, event.event_name, before, snapshot(event), note)
+    owner = event.owner or "editor"
+    if action == "submit":
+        notify(db, "approver", event.event_name, "review", f"{event.event_name} is waiting for approval")
+    elif action == "reject":
+        notify(db, owner, event.event_name, "rejected", f"{event.event_name} was rejected: {note}")
+    elif action == "approve":
+        notify(db, owner, event.event_name, "approved", f"{event.event_name} was approved")
+    elif action == "deprecate":
+        notify(db, owner, event.event_name, "deprecated", f"{event.event_name} was deprecated")
     return event

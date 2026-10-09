@@ -41,7 +41,17 @@ def contracts_from_db_rows(events: list[Any]) -> dict[str, dict[str, Any]]:
     for event in events:
         params = {}
         for p in event.parameters:
-            params[p.name] = {"type": p.type, "required": p.required}
+            raw_values = getattr(p, "allowed_values", "[]") or "[]"
+            try:
+                values = json.loads(raw_values)
+            except json.JSONDecodeError:
+                values = []
+            params[p.name] = {
+                "type": p.type,
+                "required": p.required,
+                "allowed_values": values if isinstance(values, list) else [],
+                "pii": bool(getattr(p, "pii", False)),
+            }
         contracts[event.event_name] = {
             "event_name": event.event_name,
             "description": event.description,
@@ -351,6 +361,138 @@ def validate_code(
             f"EVENT GOVERNANCE CHECK — {status}. "
             f"Events found: {len(events)}. Issues: {len(errors)}."
         ),
+    }
+
+
+def _matches_type(expected: str, value: Any) -> bool:
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    return False
+
+
+def _allowed(expected: str, value: Any, allowed: list[Any]) -> bool:
+    if not allowed:
+        return True
+    if expected == "boolean":
+        return str(value).lower() in {str(item).lower() for item in allowed}
+    if expected == "number":
+        numbers = set()
+        for item in allowed:
+            try:
+                numbers.add(float(item))
+            except (TypeError, ValueError):
+                continue
+        return float(value) in numbers
+    return str(value) in {str(item) for item in allowed}
+
+
+def validate_payload(
+    event_name: str,
+    payload: dict[str, Any],
+    contracts: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Check a runtime payload against the published contract."""
+    issues: list[dict[str, Any]] = []
+    contract = contracts.get(event_name)
+    if contract is None:
+        issues.append(
+            {
+                "code": "UNKNOWN_EVENT",
+                "severity": "error",
+                "event": event_name,
+                "message": f"Unknown event '{event_name}'.",
+                "actual": event_name,
+            }
+        )
+    elif not _approved(contract.get("status")) and contract.get("status") != "DEPRECATED":
+        issues.append(
+            {
+                "code": "NOT_APPROVED",
+                "severity": "error",
+                "event": event_name,
+                "message": f"Event '{event_name}' is {contract.get('status')} and cannot ship until approved.",
+                "expected": "APPROVED",
+                "actual": contract.get("status"),
+            }
+        )
+    else:
+        if contract.get("status") == "DEPRECATED":
+            replacement = contract.get("replacement") or "an approved event"
+            issues.append(
+                {
+                    "code": "DEPRECATED",
+                    "severity": "error",
+                    "event": event_name,
+                    "message": f"Event '{event_name}' is DEPRECATED. Use '{replacement}' instead.",
+                    "expected": replacement,
+                    "actual": event_name,
+                }
+            )
+        expected = contract.get("parameters") or {}
+        for name, spec in expected.items():
+            required = spec.get("required", True) if isinstance(spec, dict) else True
+            expected_type = spec.get("type", "string") if isinstance(spec, dict) else "string"
+            allowed = spec.get("allowed_values") or [] if isinstance(spec, dict) else []
+            if name not in payload:
+                if required:
+                    issues.append(
+                        {
+                            "code": "MISSING_PARAM",
+                            "severity": "error",
+                            "event": contract["event_name"],
+                            "message": f"Required parameter '{name}' is missing.",
+                            "expected": name,
+                        }
+                    )
+                continue
+            value = payload[name]
+            if not _matches_type(expected_type, value):
+                issues.append(
+                    {
+                        "code": "TYPE_MISMATCH",
+                        "severity": "error",
+                        "event": contract["event_name"],
+                        "message": f"Parameter '{name}' expected {expected_type}.",
+                        "expected": expected_type,
+                        "actual": type(value).__name__,
+                    }
+                )
+                continue
+            if not _allowed(expected_type, value, allowed):
+                issues.append(
+                    {
+                        "code": "VALUE",
+                        "severity": "error",
+                        "event": contract["event_name"],
+                        "message": f"Parameter '{name}' must be one of {', '.join(str(item) for item in allowed)}.",
+                        "expected": ", ".join(str(item) for item in allowed),
+                        "actual": str(value),
+                    }
+                )
+        for name in payload:
+            if name not in expected:
+                issues.append(
+                    {
+                        "code": "EXTRA_PARAM",
+                        "severity": "error",
+                        "event": contract["event_name"],
+                        "message": f"Parameter '{name}' is not in the contract.",
+                        "actual": name,
+                    }
+                )
+    errors = [issue for issue in issues if issue.get("severity") == "error"]
+    status = "FAILED" if errors else "PASSED"
+    return {
+        "status": status,
+        "events_found": 1 if contract else 0,
+        "issues": issues,
+        "events": [{"event_name": event_name, "parameters": payload}],
+        "suggested_implementation": None,
+        "summary": f"PAYLOAD CHECK — {status}. Issues: {len(errors)}.",
     }
 
 

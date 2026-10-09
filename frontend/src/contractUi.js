@@ -5,12 +5,22 @@ export function formatDiffValue(value) {
   return typeof value === 'object' ? JSON.stringify(value) : String(value)
 }
 
+export const PLATFORMS = ['APP', 'SHOP', 'BROADBAND', 'BOT', 'TV']
+
 export function parametersFromRows(rows) {
   const parameters = {}
   for (const row of rows) {
     const name = (row.name || '').trim()
     if (!name) continue
-    parameters[name] = { type: row.type || 'string', required: Boolean(row.required) }
+    parameters[name] = {
+      type: row.type || 'string',
+      required: Boolean(row.required),
+      allowed_values: String(row.allowed || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean),
+      pii: Boolean(row.pii),
+    }
   }
   return parameters
 }
@@ -40,18 +50,24 @@ export function DiffView({ diff }) {
 }
 
 function emptyRow() {
-  return { name: '', type: 'string', required: true }
+  return { name: '', type: 'string', required: true, allowed: '', pii: false }
 }
 
 export function ContractEditor({ onSubmit, initial }) {
   const [name, setName] = useState(initial?.event_name || '')
   const [description, setDescription] = useState(initial?.description || '')
+  const [platforms, setPlatforms] = useState(initial?.platforms || [])
+  const [owner, setOwner] = useState(initial?.owner || '')
+  const [aliases, setAliases] = useState((initial?.aliases || []).join(', '))
+  const [trigger, setTrigger] = useState(initial?.trigger || '')
   const [rows, setRows] = useState(
     initial?.parameters
       ? Object.entries(initial.parameters).map(([key, spec]) => ({
           name: key,
           type: spec.type || 'string',
           required: spec.required !== false,
+          allowed: (spec.allowed_values || []).join(', '),
+          pii: Boolean(spec.pii),
         }))
       : [emptyRow()],
   )
@@ -69,6 +85,10 @@ export function ContractEditor({ onSubmit, initial }) {
         onSubmit({
           event_name: name.trim(),
           description: description.trim(),
+          platforms,
+          owner: owner.trim(),
+          aliases: aliases.split(',').map((item) => item.trim()).filter(Boolean),
+          trigger: trigger.trim(),
           parameters: parametersFromRows(rows),
           expected_revision: initial?.revision,
         })
@@ -88,6 +108,44 @@ export function ContractEditor({ onSubmit, initial }) {
       placeholder: 'Description',
       onChange: (event) => setDescription(event.target.value),
     }),
+    h('input', {
+      'aria-label': 'Owner',
+      value: owner,
+      placeholder: 'Owner email',
+      onChange: (event) => setOwner(event.target.value),
+    }),
+    h('input', {
+      'aria-label': 'Aliases',
+      value: aliases,
+      placeholder: 'Aliases, comma separated',
+      onChange: (event) => setAliases(event.target.value),
+    }),
+    h('input', {
+      'aria-label': 'Trigger',
+      value: trigger,
+      placeholder: 'When the event fires',
+      onChange: (event) => setTrigger(event.target.value),
+    }),
+    h(
+      'div',
+      { className: 'toolbar' },
+      PLATFORMS.map((platform) =>
+        h(
+          'label',
+          { key: platform },
+          h('input', {
+            type: 'checkbox',
+            checked: platforms.includes(platform),
+            onChange: (event) =>
+              setPlatforms((current) =>
+                event.target.checked ? [...current, platform] : current.filter((item) => item !== platform),
+              ),
+          }),
+          ' ',
+          platform,
+        ),
+      ),
+    ),
     rows.map((row, index) =>
       h(
         'div',
@@ -107,11 +165,23 @@ export function ContractEditor({ onSubmit, initial }) {
           },
           ['string', 'number', 'boolean'].map((type) => h('option', { key: type, value: type }, type)),
         ),
+        h('input', {
+          'aria-label': `Parameter ${index + 1} allowed values`,
+          value: row.allowed,
+          placeholder: 'allowed values',
+          onChange: (event) => update(index, { allowed: event.target.value }),
+        }),
         h('label', null, h('input', {
           type: 'checkbox',
           checked: row.required,
           onChange: (event) => update(index, { required: event.target.checked }),
         }), ' Required'),
+        h('label', null, h('input', {
+          'aria-label': `Parameter ${index + 1} personal data`,
+          type: 'checkbox',
+          checked: row.pii,
+          onChange: (event) => update(index, { pii: event.target.checked }),
+        }), ' PII'),
         h(
           'button',
           {

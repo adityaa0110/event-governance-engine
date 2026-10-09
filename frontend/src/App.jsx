@@ -27,7 +27,7 @@ function Badge({ children, kind }) {
   return <span className={`badge ${kind || ''}`}>{children}</span>
 }
 
-function Dashboard({ stats, onGo }) {
+function Dashboard({ stats, onGo, queue, notices, onOpen, onRead }) {
   return (
     <div>
       <section className="panel">
@@ -82,6 +82,29 @@ function Dashboard({ stats, onGo }) {
       </section>
 
       <section className="panel">
+        <h2>Waiting on you</h2>
+        <p className="sub">Drafts you own and contracts waiting for approval.</p>
+        {(notices || []).map((item) => (
+          <p key={item.id}>
+            {item.message}{' '}
+            <button className="btn btn-secondary" onClick={() => onRead(item.id)}>
+              Mark read
+            </button>
+          </p>
+        ))}
+        {(queue || []).map((item) => (
+          <p key={`${item.reason}-${item.event_name}`}>
+            <button className="btn btn-secondary" onClick={() => onOpen(item.event_name)}>
+              {item.event_name}
+            </button>{' '}
+            {item.status} · {item.reason}
+            {item.owner ? ` · ${item.owner}` : ''}
+          </p>
+        ))}
+        {!queue?.length && <p className="muted">Nothing is waiting.</p>}
+      </section>
+
+      <section className="panel">
         <h2>The drift problem</h2>
         <p className="sub">Same business action, five incompatible implementations.</p>
         <div className="platforms-drift">
@@ -125,6 +148,7 @@ function Analyze({ onOpenEvent }) {
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
   const [decisions, setDecisions] = useState({})
+  const [runs, setRuns] = useState([])
 
   async function recordDecision(ev, decision) {
     setError('')
@@ -144,6 +168,7 @@ function Analyze({ onOpenEvent }) {
 
   useEffect(() => {
     loadDemo().catch((e) => setError(e.message))
+    api.aiRuns().then(setRuns).catch(() => {})
   }, [])
 
   async function runGenerate() {
@@ -152,6 +177,7 @@ function Analyze({ onOpenEvent }) {
     try {
       const data = await api.generate(requirement, 'BROADBAND')
       setResult(data)
+      setRuns(await api.aiRuns().catch(() => []))
     } catch (e) {
       setError(e.message)
     } finally {
@@ -223,6 +249,15 @@ function Analyze({ onOpenEvent }) {
           ))}
           {!result && <p className="muted">No events generated yet.</p>}
         </div>
+        <h3>AI runs</h3>
+        {runs.map((run) => (
+          <p key={run.id}>
+            {run.status || 'run'} · {run.prompt_version || 'unversioned'} · {run.latency_ms}ms
+            {run.fallback_reason ? ` · ${run.fallback_reason}` : ''}
+            <span className="muted"> · {run.requirement_redacted}</span>
+          </p>
+        ))}
+        {!runs.length && <p className="muted">No AI runs stored yet.</p>}
       </section>
     </div>
   )
@@ -230,9 +265,14 @@ function Analyze({ onOpenEvent }) {
 
 function Catalogue({ selectedName, setSelectedName, principal }) {
   const [q, setQ] = useState('')
+  const [status, setStatus] = useState('')
   const [events, setEvents] = useState([])
+  const [total, setTotal] = useState(0)
   const [detail, setDetail] = useState(null)
   const [diff, setDiff] = useState(null)
+  const [versions, setVersions] = useState([])
+  const [usages, setUsages] = useState([])
+  const [artifact, setArtifact] = useState('')
   const [error, setError] = useState('')
   async function createDraft(payload) {
     setError('')
@@ -240,7 +280,10 @@ function Catalogue({ selectedName, setSelectedName, principal }) {
       const created = await api.createEvent({
         event_name: payload.event_name,
         description: payload.description,
-        platforms: ['BROADBAND'],
+        platforms: payload.platforms,
+        aliases: payload.aliases,
+        owner: payload.owner,
+        trigger: payload.trigger,
         parameters: payload.parameters,
       })
       setSelectedName(created.event_name)
@@ -255,6 +298,10 @@ function Catalogue({ selectedName, setSelectedName, principal }) {
     try {
       const saved = await api.updateEvent(detail.event_name, {
         description: payload.description,
+        platforms: payload.platforms,
+        aliases: payload.aliases,
+        owner: payload.owner,
+        trigger: payload.trigger,
         parameters: payload.parameters,
         expected_revision: detail.revision,
       })
@@ -265,14 +312,15 @@ function Catalogue({ selectedName, setSelectedName, principal }) {
     }
   }
 
-  async function refresh(query = q, name = selectedName) {
+  async function refresh(query = q, name = selectedName, nextStatus = status, offset = 0, append = false) {
     setError('')
     try {
-      const page = await api.listEvents(query)
+      const page = await api.listEvents(query, offset, nextStatus)
       const list = page.items || []
-      setEvents(list)
+      setTotal(page.total || 0)
+      setEvents((current) => (append ? [...current, ...list] : list))
       const next = name || list[0]?.event_name
-      if (next) {
+      if (next && !append) {
         setSelectedName(next)
         setDetail(await api.getEvent(next))
         setDiff(await api.diff(next))
@@ -297,6 +345,9 @@ function Catalogue({ selectedName, setSelectedName, principal }) {
       .diff(selectedName)
       .then(setDiff)
       .catch(() => setDiff(null))
+    api.versions(selectedName).then(setVersions).catch(() => setVersions([]))
+    api.usages(selectedName).then(setUsages).catch(() => setUsages([]))
+    setArtifact('')
   }, [selectedName])
 
   return (
@@ -311,9 +362,23 @@ function Catalogue({ selectedName, setSelectedName, principal }) {
             placeholder="Search purchase, buy, checkout…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && refresh(q)}
+            onKeyDown={(e) => e.key === 'Enter' && refresh(q, selectedName, status)}
           />
-          <button className="btn btn-secondary" onClick={() => refresh(q)}>
+          <select
+            aria-label="Status"
+            value={status}
+            onChange={(e) => {
+              setStatus(e.target.value)
+              refresh(q, selectedName, e.target.value)
+            }}
+          >
+            <option value="">All statuses</option>
+            <option value="DRAFT">Draft</option>
+            <option value="REVIEW">Review</option>
+            <option value="APPROVED">Approved</option>
+            <option value="DEPRECATED">Deprecated</option>
+          </select>
+          <button className="btn btn-secondary" onClick={() => refresh(q, selectedName, status)}>
             Search
           </button>
         </div>
@@ -337,6 +402,14 @@ function Catalogue({ selectedName, setSelectedName, principal }) {
             </button>
           ))}
         </div>
+        <p className="muted">
+          Showing {events.length} of {total}
+        </p>
+        {events.length < total && (
+          <button className="btn btn-secondary" onClick={() => refresh(q, selectedName, status, events.length, true)}>
+            Load more
+          </button>
+        )}
       </section>
 
       <section className="panel">
@@ -358,16 +431,39 @@ function Catalogue({ selectedName, setSelectedName, principal }) {
               ))}
             </div>
             <p className="muted">{detail.description}</p>
+            {detail.trigger && <p className="muted">Trigger: {detail.trigger}</p>}
+            {detail.owner && <p className="muted">Owner: {detail.owner}</p>}
+            {(detail.aliases || []).length > 0 && <p className="muted">Aliases: {detail.aliases.join(', ')}</p>}
             <DiffView diff={diff} />
+            <div className="toolbar">
+              <button className="btn btn-secondary" onClick={() => api.schema(detail.event_name).then((data) => setArtifact(JSON.stringify(data.json_schema, null, 2)))}>
+                JSON Schema
+              </button>
+              {['typescript', 'kotlin', 'swift'].map((language) => (
+                <button key={language} className="btn btn-secondary" onClick={() => api.types(detail.event_name, language).then((data) => setArtifact(data.source))}>
+                  {language}
+                </button>
+              ))}
+            </div>
+            {artifact && <div className="code">{artifact}</div>}
             {(detail.status === 'DRAFT' || detail.status === 'REVIEW') && can(principal, 'editor') && (
               <ContractEditor key={`${detail.event_name}-${detail.revision}`} initial={detail} onSubmit={saveDraft} />
             )}
+            <h3>Dependencies</h3>
+            {usages.map((item) => (
+              <p key={item.repository}>
+                {item.repository} · {item.count} validation run{item.count === 1 ? '' : 's'}
+                {item.last_file ? ` · ${item.last_file}` : ''}
+              </p>
+            ))}
+            {!usages.length && <p className="muted">No validation runs have emitted this event.</p>}
             <WorkflowActions
               event={detail}
               principal={principal}
               onChanged={async (next) => {
                 setDetail(next)
                 setDiff(await api.diff(next.event_name).catch(() => null))
+                setVersions(await api.versions(next.event_name).catch(() => []))
               }}
             />
             {detail.replacement && (
@@ -381,6 +477,8 @@ function Catalogue({ selectedName, setSelectedName, principal }) {
                   <th>Parameter</th>
                   <th>Type</th>
                   <th>Required</th>
+                  <th>Allowed</th>
+                  <th>PII</th>
                 </tr>
               </thead>
               <tbody>
@@ -391,10 +489,20 @@ function Catalogue({ selectedName, setSelectedName, principal }) {
                     </td>
                     <td>{spec.type}</td>
                     <td>{spec.required ? 'REQUIRED' : 'optional'}</td>
+                    <td>{(spec.allowed_values || []).join(', ') || '—'}</td>
+                    <td>{spec.pii ? 'yes' : '—'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            <h3>Version history</h3>
+            {versions.map((item) => (
+              <p key={item.id}>
+                {item.action} · v{item.version} · {item.status} · {item.actor}
+                {item.comment ? ` · ${item.comment}` : ''}
+              </p>
+            ))}
+            {!versions.length && <p className="muted">No versions yet.</p>}
           </>
         )}
       </section>
@@ -404,20 +512,59 @@ function Catalogue({ selectedName, setSelectedName, principal }) {
 
 function Validate() {
   const [code, setCode] = useState(INVALID_SAMPLE)
+  const [repository, setRepository] = useState('sample-project')
+  const [payloadEvent, setPayloadEvent] = useState('purchase_button_clicked')
+  const [payloadText, setPayloadText] = useState(
+    '{"product_id":"123","product_category":"broadband","price":499,"customer_type":"existing"}',
+  )
+  const [tracker, setTracker] = useState('')
+  const [trackers, setTrackers] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
+
+  useEffect(() => {
+    api.trackingFunctions().then((data) => setTrackers(data.functions || [])).catch(() => {})
+  }, [])
 
   async function run(payload) {
     setLoading(true)
     setError('')
     try {
-      const data = await api.validate(payload)
+      const data = await api.validate({ repository, ...payload })
       setResult(data)
     } catch (e) {
       setError(e.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function checkPayload() {
+    setLoading(true)
+    setError('')
+    try {
+      const data = await api.validatePayload({
+        event_name: payloadEvent.trim(),
+        payload: JSON.parse(payloadText),
+        repository,
+      })
+      setResult(data)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function addTracker() {
+    setError('')
+    try {
+      const data = await api.addTrackingFunction({ name: tracker.trim(), style: 'auto', event_arg: 0, params_arg: 1 })
+      setTrackers(data.functions || [])
+      setTracker('')
+    } catch (e) {
+      setError(e.message)
     }
   }
 
@@ -459,6 +606,19 @@ function Validate() {
           </button>
         </div>
         <textarea value={code} onChange={(e) => setCode(e.target.value)} />
+        <h3>Runtime payload</h3>
+        <input aria-label="Repository" value={repository} onChange={(e) => setRepository(e.target.value)} placeholder="repository" />
+        <input aria-label="Payload event" value={payloadEvent} onChange={(e) => setPayloadEvent(e.target.value)} placeholder="event_name" />
+        <textarea aria-label="Payload JSON" value={payloadText} onChange={(e) => setPayloadText(e.target.value)} />
+        <button className="btn btn-primary" onClick={checkPayload} disabled={loading}>Check payload</button>
+        <h3>Tracking wrappers</h3>
+        {trackers.map((item) => (
+          <p key={item.name}><code>{item.name}</code> · event arg {item.event_arg} · params arg {item.params_arg}</p>
+        ))}
+        <div className="toolbar">
+          <input aria-label="Wrapper name" value={tracker} onChange={(e) => setTracker(e.target.value)} placeholder="function name" />
+          <button className="btn btn-secondary" onClick={addTracker} disabled={!tracker.trim()}>Add wrapper</button>
+        </div>
       </section>
 
       <section className="panel">
@@ -572,6 +732,8 @@ export default function App() {
   const [history, setHistory] = useState([])
   const [audit, setAudit] = useState([])
   const [decisions, setDecisions] = useState([])
+  const [queue, setQueue] = useState([])
+  const [notices, setNotices] = useState([])
   const [authError, setAuthError] = useState('')
 
   useEffect(() => {
@@ -592,7 +754,14 @@ export default function App() {
     api.listValidations().then(setHistory).catch(() => {})
     api.audit().then((page) => setAudit(page.items || [])).catch(() => {})
     api.recommendations().then((page) => setDecisions(page.items || [])).catch(() => {})
+    api.queue().then(setQueue).catch(() => {})
+    api.notifications().then(setNotices).catch(() => {})
   }, [tab])
+
+  async function markRead(id) {
+    await api.markNotification(id)
+    setNotices(await api.notifications().catch(() => []))
+  }
 
   function openEvent(name) {
     setSelectedName(name)
@@ -642,7 +811,14 @@ export default function App() {
 
       {tab === 'dashboard' && (
         <>
-          <Dashboard stats={stats} onGo={setTab} />
+          <Dashboard
+          stats={stats}
+          onGo={setTab}
+          queue={queue}
+          notices={notices}
+          onOpen={openEvent}
+          onRead={markRead}
+        />
           <section className="panel">
             <h2>Recent governance activity</h2>
             <div className="split">

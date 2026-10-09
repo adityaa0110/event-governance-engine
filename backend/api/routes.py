@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 
@@ -19,8 +20,20 @@ from governance import (
     transition,
     validate_contract_shape,
 )
-from models import AiRun, AuditLog, Event, EventVersion, RecommendationDecision, TrackingFunction, ValidationResult
+from models import (
+    AiRun,
+    AuditLog,
+    Event,
+    EventUsage,
+    EventVersion,
+    Notification,
+    RecommendationDecision,
+    TrackingFunction,
+    ValidationResult,
+)
+from publish import json_schema, render_type
 from schemas import (
+    AiRunOut,
     AuditEntry,
     AuditPage,
     ContractDiff,
@@ -35,13 +48,19 @@ from schemas import (
     FoundEvent,
     GenerateRequest,
     GenerateResponse,
+    JsonSchemaOut,
+    NotificationOut,
+    PayloadCheckRequest,
     PrincipalOut,
     PublicConfig,
+    PublishedType,
+    QueueItem,
     RecommendationDecisionOut,
     RecommendationPage,
     RecommendationRequest,
     TrackingFunctionIn,
     TransitionRequest,
+    UsageSummary,
     ValidateCodeRequest,
     ValidateResponse,
     ValidationIssue,
@@ -52,7 +71,7 @@ from observability import notify_alert, record_ai_failure, record_validation
 from tracing import current_trace_id
 from sqlalchemy import text
 from sqlalchemy.orm import Session, selectinload
-from validator.engine import format_report, load_sample_code, validate_code
+from validator.engine import format_report, load_sample_code, validate_code, validate_payload
 
 public_router = APIRouter()
 router = APIRouter()
@@ -69,6 +88,47 @@ DEMO_PRD = (
 
 def _event_query(db: Session):
     return db.query(Event).options(selectinload(Event.parameters))
+
+
+def _record_usages(db: Session, events: list[dict], repository: str, validation_id: int | None, principal: Principal) -> None:
+    actor = principal.email or principal.subject
+    seen: set[str] = set()
+    for event in events:
+        name = event.get("event_name")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        db.add(
+            EventUsage(
+                event_name=name,
+                repository=repository,
+                file=event.get("file") or "",
+                line=event.get("line"),
+                validation_id=validation_id,
+                actor=actor,
+            )
+        )
+
+
+def _audiences(principal: Principal) -> set[str]:
+    audiences = {principal.email or "", principal.subject}
+    if principal.has("approver"):
+        audiences.add("approver")
+    if principal.has("editor"):
+        audiences.add("editor")
+    return {item for item in audiences if item}
+
+
+def _notification_out(row: Notification) -> NotificationOut:
+    return NotificationOut(
+        id=row.id,
+        audience=row.audience,
+        event_name=row.event_name,
+        kind=row.kind,
+        message=row.message,
+        read=bool(row.read),
+        created_at=row.created_at,
+    )
 
 
 def _get_event(db: Session, event_name: str) -> Event:
@@ -151,6 +211,7 @@ def _window(limit: int, offset: int, cap: int = 100) -> tuple[int, int]:
 @router.get("/events", response_model=EventPage)
 def list_events(
     q: str | None = Query(None),
+    status: str | None = Query(None),
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -160,6 +221,12 @@ def list_events(
     if q:
         like = f"%{q}%"
         query = query.filter((Event.event_name.ilike(like)) | (Event.description.ilike(like)))
+    if status:
+        wanted = status.upper()
+        if wanted == "APPROVED":
+            query = query.filter(Event.status.in_(["APPROVED", "ACTIVE"]))
+        else:
+            query = query.filter(Event.status == wanted)
     total = query.count()
     rows = query.order_by(Event.event_name.asc()).offset(offset).limit(limit).all()
     return EventPage(
@@ -209,6 +276,47 @@ def diff_event(event_name: str, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/events/{event_name}/schema", response_model=JsonSchemaOut)
+def event_schema(event_name: str, db: Session = Depends(get_db)):
+    contract = event_to_contract(_get_event(db, event_name)).model_dump()
+    return JsonSchemaOut(event_name=event_name, json_schema=json_schema(contract))
+
+
+@router.get("/events/{event_name}/types", response_model=PublishedType)
+def event_types(event_name: str, language: str = "typescript", db: Session = Depends(get_db)):
+    contract = event_to_contract(_get_event(db, event_name)).model_dump()
+    try:
+        source = render_type(contract, language.lower())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return PublishedType(language=language.lower(), source=source)
+
+
+@router.get("/events/{event_name}/usages", response_model=list[UsageSummary])
+def event_usages(event_name: str, db: Session = Depends(get_db)):
+    _get_event(db, event_name)
+    rows = (
+        db.query(EventUsage)
+        .filter(EventUsage.event_name == event_name)
+        .order_by(EventUsage.id.desc())
+        .all()
+    )
+    grouped: dict[str, UsageSummary] = {}
+    for row in rows:
+        key = row.repository or "unspecified"
+        current = grouped.get(key)
+        if current is None:
+            grouped[key] = UsageSummary(
+                repository=key,
+                count=1,
+                last_file=row.file or "",
+                last_line=row.line,
+            )
+        else:
+            current.count += 1
+    return list(grouped.values())
+
+
 @router.post("/events", response_model=EventContract)
 def create_event(
     payload: EventCreate,
@@ -226,8 +334,8 @@ def create_event(
         status="DRAFT",
         replacement=payload.replacement,
         platforms=",".join(payload.platforms),
-        aliases=",".join(payload.aliases),
-        owner=principal.email or principal.subject,
+        aliases=",".join(item.strip() for item in payload.aliases if item.strip()),
+        owner=payload.owner.strip() or principal.email or principal.subject,
         trigger=payload.trigger,
     )
     replace_parameters(event, payload.parameters)
@@ -261,7 +369,9 @@ def update_event(
     if payload.platforms is not None:
         event.platforms = ",".join(payload.platforms)
     if payload.aliases is not None:
-        event.aliases = ",".join(payload.aliases)
+        event.aliases = ",".join(item.strip() for item in payload.aliases if item.strip())
+    if payload.owner is not None:
+        event.owner = payload.owner.strip()
     if payload.trigger is not None:
         event.trigger = payload.trigger
     if payload.parameters is not None:
@@ -345,6 +455,7 @@ def validate(
         platform=payload.platform,
         wrappers=wrappers or None,
     )
+    repository = payload.repository.strip() or ("sample:" + payload.sample if payload.sample else "api")
     record = ValidationResult(
         status=result["status"],
         source="sample" if payload.sample else "code",
@@ -355,6 +466,8 @@ def validate(
         trace_id=current_trace_id(),
     )
     db.add(record)
+    db.flush()
+    _record_usages(db, result.get("events") or [], repository, record.id, principal)
     db.commit()
     record_validation(result["status"])
     db.refresh(record)
@@ -457,9 +570,12 @@ def decide_recommendation(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     key = (idempotency_key or "").strip() or None
+    request_hash = hashlib.sha256(payload.model_dump_json().encode()).hexdigest()
     if key:
         existing = db.query(RecommendationDecision).filter(RecommendationDecision.idempotency_key == key).first()
         if existing is not None:
+            if existing.request_hash and existing.request_hash != request_hash:
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for a different request")
             if existing.response_json:
                 return RecommendationDecisionOut.model_validate_json(existing.response_json)
             return _decision_out(existing)
@@ -493,6 +609,7 @@ def decide_recommendation(
         event_name=event_name,
         decision=decision,
         idempotency_key=key,
+        request_hash=request_hash if key else "",
     )
     db.add(row)
     db.commit()
@@ -548,3 +665,126 @@ def register_tracking_function(
             for row in rows
         ]
     }
+
+
+def _validation_response(record: ValidationResult, result: dict) -> ValidateResponse:
+    return ValidateResponse(
+        id=record.id,
+        status=result["status"],
+        events_found=result["events_found"],
+        issues=[ValidationIssue(**issue) for issue in result["issues"]],
+        events=[FoundEvent(**event) for event in result["events"]],
+        suggested_implementation=result.get("suggested_implementation"),
+        summary=result.get("summary") or format_report(result),
+    )
+
+
+@router.post("/validate/payload", response_model=ValidateResponse)
+def validate_event_payload(
+    payload: PayloadCheckRequest,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_role("viewer")),
+):
+    result = validate_payload(payload.event_name, payload.payload, get_contracts_map(db))
+    repository = payload.repository.strip() or "runtime"
+    record = ValidationResult(
+        status=result["status"],
+        source="payload",
+        actor=principal.email or principal.subject,
+        events_found=result["events_found"],
+        issues_count=len([issue for issue in result["issues"] if issue.get("severity") == "error"]),
+        report_json=json.dumps(result),
+        trace_id=current_trace_id(),
+    )
+    db.add(record)
+    db.flush()
+    _record_usages(db, result.get("events") or [], repository, record.id, principal)
+    db.commit()
+    record_validation(result["status"])
+    db.refresh(record)
+    return _validation_response(record, result)
+
+
+@router.get("/queue", response_model=list[QueueItem])
+def review_queue(db: Session = Depends(get_db), principal: Principal = Depends(get_current_user)):
+    items: list[QueueItem] = []
+    seen: set[str] = set()
+    if principal.has("approver"):
+        waiting = _event_query(db).filter(Event.status == "REVIEW").order_by(Event.event_name.asc()).all()
+        for event in waiting:
+            seen.add(event.event_name)
+            items.append(
+                QueueItem(
+                    event_name=event.event_name,
+                    status=event.status,
+                    owner=event.owner or "",
+                    reason="Awaiting approval",
+                )
+            )
+    if principal.has("editor"):
+        owner = principal.email or principal.subject
+        drafts = (
+            _event_query(db)
+            .filter(Event.status == "DRAFT", Event.owner == owner)
+            .order_by(Event.event_name.asc())
+            .all()
+        )
+        for event in drafts:
+            if event.event_name in seen:
+                continue
+            items.append(
+                QueueItem(
+                    event_name=event.event_name,
+                    status=event.status,
+                    owner=event.owner or "",
+                    reason="Your draft",
+                )
+            )
+    return items
+
+
+@router.get("/notifications", response_model=list[NotificationOut])
+def list_notifications(
+    unread: bool = False,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_current_user),
+):
+    query = db.query(Notification).filter(Notification.audience.in_(_audiences(principal)))
+    if unread:
+        query = query.filter(Notification.read.is_(False))
+    rows = query.order_by(Notification.id.desc()).limit(50).all()
+    return [_notification_out(row) for row in rows]
+
+
+@router.post("/notifications/{notification_id}/read", response_model=NotificationOut)
+def mark_notification_read(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_current_user),
+):
+    row = db.query(Notification).filter(Notification.id == notification_id).first()
+    if row is None or row.audience not in _audiences(principal):
+        raise HTTPException(status_code=404, detail="Notification not found")
+    row.read = True
+    db.commit()
+    db.refresh(row)
+    return _notification_out(row)
+
+
+@router.get("/ai-runs", response_model=list[AiRunOut])
+def list_ai_runs(limit: int = 20, db: Session = Depends(get_db)):
+    rows = db.query(AiRun).order_by(AiRun.id.desc()).limit(min(max(limit, 1), 100)).all()
+    return [
+        AiRunOut(
+            id=row.id,
+            model=row.model,
+            prompt_version=row.prompt_version,
+            input_hash=row.input_hash,
+            requirement_redacted=row.requirement_redacted,
+            latency_ms=row.latency_ms,
+            fallback_reason=row.fallback_reason or "",
+            status=row.status,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]

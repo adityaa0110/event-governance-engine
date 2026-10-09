@@ -1,0 +1,8 @@
+{
+  "name": "event-governance-parser",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@babel/parser": "7.28.0"
+  }
+}

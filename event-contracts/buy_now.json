@@ -1,0 +1,12 @@
+{
+  "event_name": "buy_now",
+  "description": "Deprecated legacy Buy Now event. Use purchase_button_clicked.",
+  "version": "1.0",
+  "status": "DEPRECATED",
+  "replacement": "purchase_button_clicked",
+  "platforms": ["SHOP"],
+  "parameters": {
+    "product_id": { "type": "string", "required": true },
+    "price": { "type": "number", "required": true }
+  }
+}

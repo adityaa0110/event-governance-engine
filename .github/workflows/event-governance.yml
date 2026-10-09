@@ -1,0 +1,142 @@
+name: Event Governance
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements-dev.txt
+          npm install --prefix validator-cli
+
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Run governance tests
+        run: pytest
+
+  validate-events:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate sample-project/invalid (expect FAIL)
+        id: invalid
+        continue-on-error: true
+        run: |
+          python validator-cli/event_validator.py scan sample-project/invalid
+          echo "invalid_exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Validate sample-project/valid (expect PASS)
+        run: python validator-cli/event_validator.py scan sample-project/valid
+
+      - name: Enforce invalid sample fails
+        run: |
+          if [ "${{ steps.invalid.outcome }}" != "failure" ]; then
+            echo "Expected invalid sample to fail governance check"
+            exit 1
+          fi
+          echo "Governance gate working: invalid FAIL, valid PASS"
+
+      - name: Validate tracking calls on changed lines
+        if: github.event_name == 'pull_request'
+        run: |
+          python validator-cli/event_validator.py scan --changed --base origin/${{ github.base_ref }} \
+            --output governance.sarif --comment-file governance-comment.md
+
+      - name: Upload findings
+        if: always() && github.event_name == 'pull_request'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: governance.sarif
+
+      - name: Comment on pull request
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs')
+            const body = fs.existsSync('governance-comment.md')
+              ? fs.readFileSync('governance-comment.md', 'utf8')
+              : 'Event governance failed. See the workflow log.'
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            })
+
+  postgres-migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: governance
+          POSTGRES_PASSWORD: governance
+          POSTGRES_DB: governance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U governance -d governance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r backend/requirements-dev.txt
+      - name: Upgrade and roll back PostgreSQL
+        env:
+          POSTGRES_TEST_URL: postgresql+psycopg://governance:governance@localhost:5432/governance
+        run: pytest backend/tests/test_postgres_migrations.py
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: |
+          pip install -r backend/requirements.txt
+          npm install --prefix validator-cli
+          npm ci --prefix frontend
+          npm --prefix frontend exec -- playwright install --with-deps chromium
+      - name: End-to-end governance flow
+        run: |
+          (cd backend && DATABASE_URL=sqlite:///./data/ci-events.db python -m uvicorn main:app --host 127.0.0.1 --port 8001) &
+          npm --prefix frontend run dev -- --host 127.0.0.1 --port 5174 &
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:8001/api/ready && curl -sf http://127.0.0.1:5174/ && break; sleep 1; done
+          npm --prefix frontend run test:e2e

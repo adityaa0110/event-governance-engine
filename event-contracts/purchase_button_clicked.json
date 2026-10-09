@@ -1,0 +1,14 @@
+{
+  "event_name": "purchase_button_clicked",
+  "description": "Triggered when customer clicks Buy Now",
+  "version": "1.0",
+  "status": "APPROVED",
+  "aliases": ["buyNowClicked", "purchase_click", "purchaseButton", "buy_now_clicked"],
+  "platforms": ["APP", "SHOP", "BROADBAND"],
+  "parameters": {
+    "product_id": { "type": "string", "required": true },
+    "product_category": { "type": "string", "required": true },
+    "price": { "type": "number", "required": true },
+    "customer_type": { "type": "string", "required": true }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "event_name": "plan_selected",
+  "description": "Triggered when customer selects a broadband plan",
+  "version": "1.0",
+  "status": "APPROVED",
+  "platforms": ["APP", "SHOP", "BROADBAND", "TV"],
+  "parameters": {
+    "plan_id": { "type": "string", "required": true },
+    "plan_name": { "type": "string", "required": true },
+    "price": { "type": "number", "required": true }
+  }
+}

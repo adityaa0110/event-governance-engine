@@ -1,0 +1,11 @@
+{
+  "functions": ["trackEvent"],
+  "wrappers": [
+    {
+      "name": "logPurchase",
+      "style": "auto",
+      "event_arg": 0,
+      "params_arg": 1
+    }
+  ]
+}

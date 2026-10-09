@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Event Governance Engine — Pitch</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root { --bg:#0b1210; --text:#e8f3ec; --muted:#9bb5a8; --accent:#3dcf8e; --warn:#f0c35a; --bad:#ff6b6b; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:'IBM Plex Sans',sans-serif; background:var(--bg); color:var(--text); }
+    .deck { height:100vh; overflow:hidden; }
+    .slide { height:100vh; padding:6vh 8vw; display:none; flex-direction:column; justify-content:center;
+      background: radial-gradient(900px 500px at 15% 0%, rgba(61,207,142,.18), transparent 55%), var(--bg); }
+    .slide.active { display:flex; animation: in .35s ease; }
+    h1,h2 { font-family:Syne,sans-serif; margin:0 0 .4em; letter-spacing:-.03em; }
+    h1 { font-size:clamp(2.4rem,5vw,4rem); }
+    h2 { font-size:clamp(1.8rem,4vw,3rem); }
+    p,li { font-size:clamp(1.05rem,2vw,1.35rem); color:var(--muted); line-height:1.45; }
+    .accent { color:var(--accent); }
+    .warn { color:var(--warn); }
+    .bad { color:var(--bad); }
+    table { border-collapse:collapse; width:min(900px,100%); margin-top:1rem; }
+    td,th { border-bottom:1px solid rgba(156,210,180,.2); padding:.7rem .5rem; text-align:left; }
+    code { color:var(--bad); }
+    .footer { position:fixed; bottom:18px; right:24px; color:var(--muted); font-size:.9rem; }
+    .hint { position:fixed; bottom:18px; left:24px; color:var(--muted); font-size:.85rem; }
+    @keyframes in { from{opacity:0; transform:translateY(8px);} to{opacity:1; transform:none;} }
+  </style>
+</head>
+<body>
+  <div class="deck">
+    <section class="slide active">
+      <p class="accent">Vibeathon</p>
+      <h1>Event Governance Engine</h1>
+      <p class="warn">Define once. Validate everywhere. Trust your analytics.</p>
+      <p>From PRD to production — trusted events by design.</p>
+    </section>
+
+    <section class="slide">
+      <h2>Analytics contract drift</h2>
+      <table>
+        <tr><th>Platform</th><th>“Buy Now” event</th></tr>
+        <tr><td>App</td><td><code>buy_now</code></td></tr>
+        <tr><td>Shop</td><td><code>purchase_click</code></td></tr>
+        <tr><td>Bot</td><td><code>buyNowClicked</code></td></tr>
+        <tr><td>TV</td><td><code>purchaseButton</code></td></tr>
+        <tr><td>Broadband</td><td><code>buy_now_clicked</code></td></tr>
+      </table>
+      <p>Same business action. Incompatible telemetry. Found too late.</p>
+    </section>
+
+    <section class="slide">
+      <h2>Today vs proposed</h2>
+      <p><span class="bad">Today:</span> Feature → manual tracking → release → analytics finds breaks → fix</p>
+      <p><span class="accent">Proposed:</span> PRD → AI → Event Contract → code → CI PASS/FAIL → catalogue</p>
+    </section>
+
+    <section class="slide">
+      <h2>Solution</h2>
+      <p>AI-powered <span class="accent">quality gate</span> for analytics events.</p>
+      <p>1. Discover actions from PRD<br/>2. Standardize against catalogue<br/>3. Generate contract<br/>4. Validate implementation in CI</p>
+    </section>
+
+    <section class="slide">
+      <h2>Event Contract = source of truth</h2>
+      <p><code style="color:var(--accent)">purchase_button_clicked</code></p>
+      <p>product_id string REQUIRED<br/>product_category string REQUIRED<br/>price number REQUIRED<br/>customer_type string REQUIRED</p>
+      <p>Platforms: APP · SHOP · BROADBAND · Versioned · Deprecatable</p>
+    </section>
+
+    <section class="slide">
+      <h2>AI + rules hybrid</h2>
+      <p><span class="accent">AI:</span> PRD understanding, reuse suggestions, explanations</p>
+      <p><span class="warn">Rules:</span> required fields, types, naming, deprecation, CI exit codes</p>
+      <p>Credible for production governance — not “LLM says OK”.</p>
+    </section>
+
+    <section class="slide">
+      <h2>Live demo</h2>
+      <p>Buy Now for Broadband → AI reuse → contract → broken PR fails → fixed PR passes</p>
+      <p class="accent">Switch to app: http://127.0.0.1:5174</p>
+    </section>
+
+    <section class="slide">
+      <h2>Impact</h2>
+      <p>5 names → 1 standard event<br/>Invalid tracking caught before merge<br/>Duplicate / deprecated events flagged<br/>Review time: minutes → seconds</p>
+    </section>
+
+    <section class="slide">
+      <h2>Roadmap</h2>
+      <p>MVP → Jira/GitHub + multi-lang → runtime monitoring → AI-assisted tracking PRs</p>
+      <p class="warn">Stop fixing analytics after production.<br/>Validate events before they ship.</p>
+    </section>
+  </div>
+  <div class="hint">← → or space to navigate</div>
+  <div class="footer"><span id="n">1</span> / <span id="t">9</span></div>
+  <script>
+    const slides = [...document.querySelectorAll('.slide')];
+    let i = 0;
+    document.getElementById('t').textContent = slides.length;
+    function show(next) {
+      i = (next + slides.length) % slides.length;
+      slides.forEach((s, idx) => s.classList.toggle('active', idx === i));
+      document.getElementById('n').textContent = i + 1;
+    }
+    window.addEventListener('keydown', (e) => {
+      if (['ArrowRight',' ','PageDown'].includes(e.key)) show(i + 1);
+      if (['ArrowLeft','PageUp'].includes(e.key)) show(i - 1);
+    });
+  </script>
+</body>
+</html>

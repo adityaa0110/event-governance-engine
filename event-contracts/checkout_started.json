@@ -1,0 +1,12 @@
+{
+  "event_name": "checkout_started",
+  "description": "Triggered when customer enters checkout after Buy Now",
+  "version": "1.0",
+  "status": "APPROVED",
+  "platforms": ["APP", "SHOP", "BROADBAND", "BOT", "TV"],
+  "parameters": {
+    "cart_id": { "type": "string", "required": true },
+    "product_id": { "type": "string", "required": true },
+    "total_amount": { "type": "number", "required": true }
+  }
+}
